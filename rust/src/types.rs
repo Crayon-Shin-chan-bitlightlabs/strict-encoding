@@ -29,20 +29,45 @@ use std::marker::PhantomData;
 use crate::{LibName, TypeName, VariantName};
 
 pub fn type_name<T>() -> String {
-    fn get_ident(path: &str) -> &str {
-        path.rsplit_once("::").map(|(_, n)| n.trim()).unwrap_or(path)
-    }
+    let name = any::type_name::<T>();
+    let bytes = name.as_bytes();
+    let mut out = String::with_capacity(name.len());
 
-    let name = any::type_name::<T>().replace('&', "");
-    let mut ident = vec![];
-    for mut arg in name.split([',', '<', '>', '(', ')']) {
-        arg = arg.trim();
-        if arg.is_empty() {
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'&' || b == b' ' || b == b'\t' || b == b'\n' || b == b'\r' {
+            i += 1;
             continue;
         }
-        ident.push(get_ident(arg));
+        if matches!(b, b',' | b'<' | b'>' | b'(' | b')') {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        while i < bytes.len()
+            && !matches!(
+                bytes[i],
+                b'&' | b' ' | b'\t' | b'\n' | b'\r' | b',' | b'<' | b'>' | b'(' | b')'
+            )
+        {
+            i += 1;
+        }
+
+        // Manual scan from the end to find the last ':' — avoids TwoWaySearcher
+        let token_bytes = &bytes[start..i];
+        let ident_start = token_bytes
+            .iter()
+            .rposition(|&b| b == b':')
+            .map(|p| start + p + 1)
+            .unwrap_or(start);
+        // SAFETY: token is a sub-slice of `name` which is a valid &str; ident_start is always
+        // on a char boundary since ':' is ASCII.
+        out.push_str(&name[ident_start..i]);
     }
-    ident.join("")
+
+    out
 }
 
 #[derive(Clone, Eq, PartialEq, Debug, Display, Error)]
@@ -50,9 +75,15 @@ pub fn type_name<T>() -> String {
 pub struct VariantError<V: Debug + Display>(pub Option<String>, pub V);
 
 impl<V: Debug + Display> VariantError<V> {
-    pub fn with<T>(val: V) -> Self { VariantError(Some(type_name::<T>()), val) }
-    pub fn typed(name: impl Into<String>, val: V) -> Self { VariantError(Some(name.into()), val) }
-    pub fn untyped(val: V) -> Self { VariantError(None, val) }
+    pub fn with<T>(val: V) -> Self {
+        VariantError(Some(type_name::<T>()), val)
+    }
+    pub fn typed(name: impl Into<String>, val: V) -> Self {
+        VariantError(Some(name.into()), val)
+    }
+    pub fn untyped(val: V) -> Self {
+        VariantError(None, val)
+    }
 }
 
 pub trait StrictDumb: Sized {
@@ -60,14 +91,19 @@ pub trait StrictDumb: Sized {
 }
 
 impl<T> StrictDumb for T
-where T: StrictType + Default
+where
+    T: StrictType + Default,
 {
-    fn strict_dumb() -> T { T::default() }
+    fn strict_dumb() -> T {
+        T::default()
+    }
 }
 
 pub trait StrictType: Sized {
     const STRICT_LIB_NAME: &'static str;
-    fn strict_name() -> Option<TypeName> { Some(tn!(type_name::<Self>())) }
+    fn strict_name() -> Option<TypeName> {
+        Some(tn!(type_name::<Self>()))
+    }
 }
 
 impl<T: StrictType> StrictType for &T {
@@ -241,5 +277,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn name_derivation() { assert_eq!(Option::<TinyVec<u8>>::strict_name(), None) }
+    fn name_derivation() {
+        assert_eq!(Option::<TinyVec<u8>>::strict_name(), None)
+    }
 }

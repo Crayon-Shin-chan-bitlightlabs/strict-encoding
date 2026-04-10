@@ -70,6 +70,8 @@ impl<O> From<FromAsciiError<O>> for InvalidRString {
 pub trait RestrictedCharSet:
     Copy + Into<u8> + TryFrom<u8, Error = VariantError<u8>> + Display + StrictEncode + StrictDumb
 {
+    #[inline]
+    fn is_valid_byte(val: u8) -> bool { Self::try_from(val).is_ok() }
 }
 
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -168,27 +170,29 @@ impl<C1: RestrictedCharSet, C: RestrictedCharSet, const MIN: usize, const MAX: u
                 rest: PhantomData,
             });
         }
-        let utf8 = String::from_utf8_lossy(bytes);
         let mut iter = bytes.iter();
         let Some(first) = iter.next() else {
             return Err(InvalidRString::Empty);
         };
-        if C1::try_from(*first).is_err() {
+        if !first.is_ascii() || !C1::is_valid_byte(*first) {
+            let utf8 = String::from_utf8_lossy(bytes);
             return Err(InvalidRString::DisallowedFirst(
                 utf8.to_string(),
                 utf8.chars().next().unwrap_or('?'),
             ));
         }
-        if let Some(pos) = iter.position(|ch| C::try_from(*ch).is_err()) {
+        if let Some(pos) = iter.position(|ch| !ch.is_ascii() || !C::is_valid_byte(*ch)) {
+            let utf8 = String::from_utf8_lossy(bytes);
             return Err(InvalidRString::InvalidChar(
                 utf8.to_string(),
                 utf8.chars().nth(pos + 1).unwrap_or('?'),
                 pos + 1,
             ));
         }
-        let s = Confined::try_from(
-            AsciiString::from_ascii(bytes).expect("not an ASCII characted subset"),
-        )?;
+        // SAFETY: the checks above validate that every byte is ASCII before constructing
+        // `AsciiString`, and also ensure the bytes satisfy the requested character sets.
+        let ascii = unsafe { AsciiString::from_ascii_unchecked(bytes.to_vec()) };
+        let s = Confined::try_from(ascii)?;
         Ok(Self {
             s,
             first: PhantomData,
@@ -846,7 +850,7 @@ pub enum AlphaCapsDash {
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
 #[derive(StrictDumb, StrictType, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_STD, tags = repr, into_u8, try_from_u8, crate = crate)]
+#[strict_type(lib = LIB_NAME_STD, tags = repr, into_u8, crate = crate)]
 #[display(inner)]
 #[repr(u8)]
 pub enum AlphaCapsLodash {
@@ -1093,7 +1097,7 @@ pub enum AlphaSmallDash {
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
 #[derive(StrictDumb, StrictType, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_STD, tags = repr, into_u8, try_from_u8, crate = crate)]
+#[strict_type(lib = LIB_NAME_STD, tags = repr, into_u8, crate = crate)]
 #[repr(u8)]
 pub enum AlphaSmallLodash {
     #[strict_type(dumb)]
@@ -2234,7 +2238,7 @@ pub enum AlphaNumDash {
 
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Debug, Display)]
 #[derive(StrictDumb, StrictType, StrictEncode, StrictDecode)]
-#[strict_type(lib = LIB_NAME_STD, tags = repr, into_u8, try_from_u8, crate = crate)]
+#[strict_type(lib = LIB_NAME_STD, tags = repr, into_u8, crate = crate)]
 #[display(inner)]
 #[repr(u8)]
 pub enum AlphaNumLodash {
@@ -2367,24 +2371,77 @@ pub enum AlphaNumLodash {
     z = b'z',
 }
 
+impl TryFrom<u8> for AlphaCapsLodash {
+    type Error = VariantError<u8>;
+    #[inline]
+    fn try_from(val: u8) -> Result<Self, Self::Error> {
+        if matches!(val, b'A'..=b'Z' | b'_') {
+            // SAFETY: AlphaCapsLodash is #[repr(u8)]; all valid discriminants are A-Z and '_'
+            Ok(unsafe { core::mem::transmute::<u8, Self>(val) })
+        } else {
+            Err(VariantError::with::<Self>(val))
+        }
+    }
+}
+
+impl TryFrom<u8> for AlphaSmallLodash {
+    type Error = VariantError<u8>;
+    #[inline]
+    fn try_from(val: u8) -> Result<Self, Self::Error> {
+        if matches!(val, b'_' | b'a'..=b'z') {
+            // SAFETY: AlphaSmallLodash is #[repr(u8)]; all valid discriminants are '_' and a-z
+            Ok(unsafe { core::mem::transmute::<u8, Self>(val) })
+        } else {
+            Err(VariantError::with::<Self>(val))
+        }
+    }
+}
+
+impl TryFrom<u8> for AlphaNumLodash {
+    type Error = VariantError<u8>;
+    #[inline]
+    fn try_from(val: u8) -> Result<Self, Self::Error> {
+        if matches!(val, b'0'..=b'9' | b'A'..=b'Z' | b'_' | b'a'..=b'z') {
+            // SAFETY: AlphaNumLodash is #[repr(u8)]; all valid discriminants are 0-9, A-Z, '_', a-z
+            Ok(unsafe { core::mem::transmute::<u8, Self>(val) })
+        } else {
+            Err(VariantError::with::<Self>(val))
+        }
+    }
+}
+
 impl RestrictedCharSet for AsciiPrintable {}
 impl RestrictedCharSet for AsciiSym {}
 impl RestrictedCharSet for Alpha {}
 impl RestrictedCharSet for AlphaDot {}
 impl RestrictedCharSet for AlphaDash {}
-impl RestrictedCharSet for AlphaLodash {}
+impl RestrictedCharSet for AlphaLodash {
+    #[inline]
+    fn is_valid_byte(val: u8) -> bool { matches!(val, b'A'..=b'Z' | b'_' | b'a'..=b'z') }
+}
 impl RestrictedCharSet for AlphaCaps {}
 impl RestrictedCharSet for AlphaCapsDot {}
 impl RestrictedCharSet for AlphaCapsDash {}
-impl RestrictedCharSet for AlphaCapsLodash {}
+impl RestrictedCharSet for AlphaCapsLodash {
+    #[inline]
+    fn is_valid_byte(val: u8) -> bool { matches!(val, b'A'..=b'Z' | b'_') }
+}
 impl RestrictedCharSet for AlphaSmall {}
 impl RestrictedCharSet for AlphaSmallDot {}
 impl RestrictedCharSet for AlphaSmallDash {}
-impl RestrictedCharSet for AlphaSmallLodash {}
+impl RestrictedCharSet for AlphaSmallLodash {
+    #[inline]
+    fn is_valid_byte(val: u8) -> bool { matches!(val, b'_' | b'a'..=b'z') }
+}
 impl RestrictedCharSet for AlphaNum {}
 impl RestrictedCharSet for AlphaNumDot {}
 impl RestrictedCharSet for AlphaNumDash {}
-impl RestrictedCharSet for AlphaNumLodash {}
+impl RestrictedCharSet for AlphaNumLodash {
+    #[inline]
+    fn is_valid_byte(val: u8) -> bool {
+        matches!(val, b'0'..=b'9' | b'A'..=b'Z' | b'_' | b'a'..=b'z')
+    }
+}
 impl RestrictedCharSet for AlphaCapsNum {}
 impl RestrictedCharSet for Dec {}
 impl RestrictedCharSet for DecDot {}
